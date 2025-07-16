@@ -17,6 +17,9 @@ type Remboursement = {
   id: string;
   employe_id: string;
   partenaire_id: string;
+  demande_avance_id: string;
+  montant_transaction: number;
+  frais_service: number;
   montant_total_remboursement: number;
   date_limite_remboursement: string;
   statut: string;
@@ -24,6 +27,11 @@ type Remboursement = {
   employee: {
     nom: string;
     prenom: string;
+    salaire_net: number;
+  };
+  demande_avance?: {
+    montant_demande: number;
+    date_validation: string;
   };
 };
 
@@ -52,23 +60,54 @@ export default function RemboursementsPage() {
     const { data, error } = await supabase
       .from('remboursements')
       .select(`
-        id, employe_id, partenaire_id, montant_total_remboursement, date_limite_remboursement, statut, date_remboursement_effectue,
-        employee:employe_id (nom, prenom)
+        id, employe_id, partenaire_id, demande_avance_id, montant_transaction, frais_service, montant_total_remboursement, date_limite_remboursement, statut, date_remboursement_effectue,
+        employee:employe_id (nom, prenom, salaire_net)
       `)
       .eq('partenaire_id', session.partner.id)
       .order('date_limite_remboursement', { ascending: true });
     if (error) {
       console.error('Erreur récupération remboursements:', error);
     }
-    // Correction du typage: employee doit être un objet, pas un tableau
-    const cleanData = (data || []).map((r: any) => ({
-      ...r,
-      employee: Array.isArray(r.employee) ? r.employee[0] : r.employee
-    }));
-    console.log('Remboursements:', cleanData);
-    setRemboursements(cleanData);
+    
+    // Récupérer les données de demande d'avance pour chaque remboursement
+    const remboursementsAvecDemandes = await Promise.all(
+      (data || []).map(async (r: any) => {
+        try {
+          const { data: demandeData, error: demandeError } = await supabase
+            .from('salary_advance_requests')
+            .select('montant_demande, date_validation')
+            .eq('id', r.demande_avance_id)
+            .single();
+          
+          if (demandeError) {
+            console.error('Erreur récupération demande avance:', demandeError);
+            return {
+              ...r,
+              employee: Array.isArray(r.employee) ? r.employee[0] : r.employee,
+              demande_avance: null
+            };
+          }
+          
+          return {
+            ...r,
+            employee: Array.isArray(r.employee) ? r.employee[0] : r.employee,
+            demande_avance: demandeData
+          };
+        } catch (error) {
+          console.error('Erreur lors de la récupération de la demande:', error);
+          return {
+            ...r,
+            employee: Array.isArray(r.employee) ? r.employee[0] : r.employee,
+            demande_avance: null
+          };
+        }
+      })
+    );
+    
+    console.log('Remboursements avec demandes:', remboursementsAvecDemandes);
+    setRemboursements(remboursementsAvecDemandes);
     // Calcul du total en attente
-    const total = (cleanData || [])
+    const total = (remboursementsAvecDemandes || [])
       .filter((r: any) => r.statut === 'EN_ATTENTE')
       .reduce((sum: number, r: any) => sum + Number(r.montant_total_remboursement), 0);
     setTotalAttente(total);
@@ -148,6 +187,33 @@ export default function RemboursementsPage() {
   // Fonction utilitaire pour formater en GNF
   const gnfFormatter = (value: number) => `${value.toLocaleString()} GNF`;
 
+  // Fonction pour calculer le salaire restant de l'employé après la demande d'avance
+  const calculateSalaireRestant = (remboursement: Remboursement) => {
+    const salaireNet = Number(remboursement.employee?.salaire_net || 0);
+    const montantDemande = Number(remboursement.demande_avance?.montant_demande || 0);
+    return Math.max(0, salaireNet - montantDemande);
+  };
+
+  // Fonction pour calculer les frais de service (6,5%)
+  const calculateFraisService = (montantDemande: number) => {
+    return montantDemande * 0.065; // 6,5%
+  };
+
+  // Fonction pour calculer le montant reçu (avance - frais)
+  const calculateMontantRecu = (montantDemande: number, fraisService: number) => {
+    return montantDemande - fraisService;
+  };
+
+  // Fonction pour calculer le remboursement dû à ZaLaMa
+  const calculateRemboursementDu = (montantDemande: number) => {
+    return montantDemande; // Le remboursement dû = montant demandé
+  };
+
+  // Fonction pour obtenir le montant demandé en toute sécurité
+  const getMontantDemande = (remboursement: Remboursement) => {
+    return Number(remboursement.demande_avance?.montant_demande || 0);
+  };
+
   // Correction : total de tous les remboursements (pas seulement en attente)
   const totalRemboursements = remboursements.reduce((sum, r) => sum + Number(r.montant_total_remboursement), 0);
 
@@ -182,16 +248,20 @@ export default function RemboursementsPage() {
           <thead className="sticky top-0 z-10 bg-[var(--zalama-card)]">
             <tr>
               <th className="px-4 py-3 text-left font-semibold border-b">Employé</th>
-              <th className="px-4 py-3 text-left font-semibold border-b">Montant</th>
-              <th className="px-4 py-3 text-left font-semibold border-b">Date limite</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Salaire net (GNF)</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Montant demandé (avance)</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Frais service (6,5%)</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Montant reçu (avance)</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Remboursement dû à ZaLaMa</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Salaire restant</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Date de l'avance</th>
               <th className="px-4 py-3 text-left font-semibold border-b">Statut</th>
-              <th className="px-4 py-3 text-center font-semibold border-b">Actions</th>
             </tr>
           </thead>
           <tbody>
             {paginatedRemboursements.length === 0 && (
               <tr>
-                <td colSpan={5} className="text-center py-8 text-gray-400">Aucun remboursement trouvé.</td>
+                <td colSpan={9} className="text-center py-8 text-gray-400">Aucun remboursement trouvé.</td>
               </tr>
             )}
             {paginatedRemboursements.map((r, idx) => (
@@ -199,8 +269,13 @@ export default function RemboursementsPage() {
                 `transition-colors ${idx % 2 === 0 ? 'bg-white/60 dark:bg-white/5' : 'bg-gray-50 dark:bg-gray-900/10'} hover:bg-blue-50 dark:hover:bg-blue-900/10 border-b last:border-b-0`
               }>
                 <td className="px-4 py-3 whitespace-nowrap">{r.employee?.nom} {r.employee?.prenom}</td>
-                <td className="px-4 py-3 font-semibold text-blue-900 dark:text-blue-200">{gnfFormatter(Number(r.montant_total_remboursement))}</td>
-                <td className="px-4 py-3">{new Date(r.date_limite_remboursement).toLocaleDateString('fr-FR')}</td>
+                <td className="px-4 py-3">{gnfFormatter(Number(r.employee?.salaire_net || 0))}</td>
+                <td className="px-4 py-3">{gnfFormatter(getMontantDemande(r))}</td>
+                <td className="px-4 py-3">{gnfFormatter(calculateFraisService(getMontantDemande(r)))}</td>
+                <td className="px-4 py-3">{gnfFormatter(calculateMontantRecu(getMontantDemande(r), calculateFraisService(getMontantDemande(r))))}</td>
+                <td className="px-4 py-3 font-semibold text-red-600 dark:text-red-400">{gnfFormatter(calculateRemboursementDu(getMontantDemande(r)))}</td>
+                <td className="px-4 py-3 font-semibold text-emerald-600 dark:text-emerald-400">{gnfFormatter(calculateSalaireRestant(r))}</td>
+                <td className="px-4 py-3">{r.demande_avance?.date_validation ? new Date(r.demande_avance.date_validation).toLocaleDateString('fr-FR') : '-'}</td>
                 <td className="px-4 py-3">
                   <span className={`px-2 py-1 rounded text-xs font-semibold
                     ${r.statut === 'PAYE' ? 'bg-green-100 text-green-700' :
@@ -208,17 +283,6 @@ export default function RemboursementsPage() {
                         'bg-gray-100 text-gray-700'}`}>
                     {r.statut}
                   </span>
-                </td>
-                <td className="px-4 py-3 flex items-center justify-center gap-2">
-                  <button title="Voir détail" className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" onClick={() => handleViewDetail(r)}>
-                    <Eye className="w-5 h-5 text-blue-600" />
-                  </button>
-                  {r.statut === 'EN_ATTENTE' && (
-                    <button title="Payer" onClick={() => handleOpenPayModal(r)} disabled={paying}
-                      className="p-2 rounded hover:bg-green-100 dark:hover:bg-green-900 transition-colors disabled:opacity-50">
-                      <CheckCircle2 className="w-5 h-5 text-green-600" />
-                    </button>
-                  )}
                 </td>
               </tr>
             ))}
@@ -293,12 +357,22 @@ export default function RemboursementsPage() {
           </DialogHeader>
           {selectedRemboursement && (
             <div className="space-y-3">
-              <div><span className="font-semibold">Employé :</span> {selectedRemboursement.employee?.nom} {selectedRemboursement.employee?.prenom}</div>
-              <div><span className="font-semibold">Montant :</span> {gnfFormatter(Number(selectedRemboursement.montant_total_remboursement))}</div>
-              <div><span className="font-semibold">Date limite :</span> {new Date(selectedRemboursement.date_limite_remboursement).toLocaleDateString('fr-FR')}</div>
-              <div><span className="font-semibold">Statut :</span> {selectedRemboursement.statut}</div>
-              <div><span className="font-semibold">Date paiement :</span> {selectedRemboursement.date_remboursement_effectue ? new Date(selectedRemboursement.date_remboursement_effectue).toLocaleDateString('fr-FR') : '-'}</div>
-              {/* Ajouter d'autres champs si besoin */}
+              <div><span className="font-semibold">Employé :</span> <span className="text-gray-800 dark:text-gray-200">{selectedRemboursement.employee?.nom} {selectedRemboursement.employee?.prenom}</span></div>
+              <div><span className="font-semibold">Salaire net :</span> <span className="font-semibold">{gnfFormatter(Number(selectedRemboursement.employee?.salaire_net || 0))}</span></div>
+              <div><span className="font-semibold">Montant demandé :</span> <span className="font-semibold">{gnfFormatter(getMontantDemande(selectedRemboursement))}</span></div>
+              <div><span className="font-semibold">Frais de service (6,5%) :</span> <span className="font-semibold">{gnfFormatter(calculateFraisService(getMontantDemande(selectedRemboursement)))}</span></div>
+              <div><span className="font-semibold">Montant reçu :</span> <span className="font-semibold">{gnfFormatter(calculateMontantRecu(getMontantDemande(selectedRemboursement), calculateFraisService(getMontantDemande(selectedRemboursement))))}</span></div>
+              <div><span className="font-semibold text-red-600 dark:text-red-400">Remboursement dû à ZaLaMa :</span> <span className="text-red-600 dark:text-red-400 font-semibold">{gnfFormatter(calculateRemboursementDu(getMontantDemande(selectedRemboursement)))}</span></div>
+              <div><span className="font-semibold text-emerald-600 dark:text-emerald-400">Salaire restant :</span> <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{gnfFormatter(calculateSalaireRestant(selectedRemboursement))}</span></div>
+              <div><span className="font-semibold">Date de l'avance :</span> <span>{selectedRemboursement.demande_avance?.date_validation ? new Date(selectedRemboursement.demande_avance.date_validation).toLocaleDateString('fr-FR') : '-'}</span></div>
+              <div><span className="font-semibold">Date limite remboursement :</span> <span>{new Date(selectedRemboursement.date_limite_remboursement).toLocaleDateString('fr-FR')}</span></div>
+              <div><span className="font-semibold">Statut :</span> <span className={`px-2 py-1 rounded text-xs font-semibold
+                ${selectedRemboursement.statut === 'PAYE' ? 'bg-green-100 text-green-700' :
+                  selectedRemboursement.statut === 'EN_ATTENTE' ? 'bg-yellow-100 text-yellow-700' :
+                    'bg-gray-100 text-gray-700'}`}>
+                {selectedRemboursement.statut}
+              </span></div>
+              <div><span className="font-semibold">Date paiement :</span> <span>{selectedRemboursement.date_remboursement_effectue ? new Date(selectedRemboursement.date_remboursement_effectue).toLocaleDateString('fr-FR') : '-'}</span></div>
             </div>
           )}
           <DialogFooter>

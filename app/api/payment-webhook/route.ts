@@ -76,6 +76,24 @@ export async function POST(request: NextRequest) {
         });
     }
 
+    // Si on a un pay_id, créer une notification spéciale pour déclencher la vérification
+    if (body.pay_id) {
+      await supabase
+        .from('notifications')
+        .insert({
+          partenaire_id: partenaire_id,
+          titre: 'Vérification de paiement requise',
+          message: `Vérification automatique du paiement ${body.pay_id}`,
+          type: 'payment_check',
+          lu: false,
+          metadata: {
+            pay_id: body.pay_id,
+            transaction_id: transaction_id,
+            status: status
+          }
+        });
+    }
+
     return NextResponse.json({ success: true });
 
   } catch (error) {

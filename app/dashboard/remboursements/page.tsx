@@ -5,6 +5,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { useRouter } from 'next/navigation';
+import PaymentResultModal from '@/components/dashboard/PaymentResultModal';
 
 import { ArcElement, BarElement, CategoryScale, Chart, Legend, LinearScale, Tooltip } from 'chart.js';
 import { useEffect, useState } from 'react';
@@ -23,6 +25,7 @@ type Remboursement = {
   date_limite_remboursement: string;
   statut: string;
   date_remboursement_effectue: string | null;
+  pay_id?: string;
   employee: {
     nom: string;
     prenom: string;
@@ -53,6 +56,9 @@ export default function RemboursementsPage() {
   const [selectedRemboursement, setSelectedRemboursement] = useState<Remboursement | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showPaymentResultModal, setShowPaymentResultModal] = useState(false);
+  const [currentPayId, setCurrentPayId] = useState<string | undefined>();
+  const router = useRouter();
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -67,7 +73,7 @@ export default function RemboursementsPage() {
     const { data, error } = await supabase
       .from('remboursements')
       .select(`
-        id, employe_id, partenaire_id, demande_avance_id, montant_transaction, frais_service, montant_total_remboursement, date_limite_remboursement, statut, date_remboursement_effectue,
+        id, employe_id, partenaire_id, demande_avance_id, montant_transaction, frais_service, montant_total_remboursement, date_limite_remboursement, statut, date_remboursement_effectue, pay_id,
         employee:employe_id (nom, prenom, salaire_net)
       `)
       .eq('partenaire_id', session.partner.id)
@@ -165,6 +171,47 @@ export default function RemboursementsPage() {
     }
   }, [loading, session?.partner]);
 
+  // Vérifier s'il y a un paiement en attente de vérification
+  useEffect(() => {
+    const checkPendingPayment = () => {
+      const pendingPayId = sessionStorage.getItem('pendingPaymentCheck');
+      const urlParams = new URLSearchParams(window.location.search);
+      const shouldCheckPayment = urlParams.get('check_payment');
+      const payIdFromUrl = urlParams.get('pay_id');
+      
+      console.log('Vérification des paramètres:', { 
+        pendingPayId, 
+        shouldCheckPayment, 
+        payIdFromUrl,
+        isLoading 
+      });
+      
+      // Priorité au pay_id de l'URL, puis au sessionStorage
+      const payIdToCheck = payIdFromUrl || pendingPayId;
+      
+      if (payIdToCheck && shouldCheckPayment) {
+        console.log('✅ Vérification automatique du paiement:', payIdToCheck);
+        setCurrentPayId(payIdToCheck);
+        setShowPaymentResultModal(true);
+        
+        // Nettoyer le sessionStorage et l'URL
+        sessionStorage.removeItem('pendingPaymentCheck');
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else {
+        console.log('❌ Pas de vérification automatique:', { 
+          payIdToCheck, 
+          shouldCheckPayment 
+        });
+      }
+    };
+
+    // Vérifier après le chargement de la page
+    if (!isLoading) {
+      console.log('🔍 Vérification après chargement...');
+      checkPendingPayment();
+    }
+  }, [isLoading]);
+
   // Action "Payer" un remboursement via l'API simplifiée
   const handlePayer = async (id: string) => {
     setPaying(true);
@@ -179,8 +226,13 @@ export default function RemboursementsPage() {
       
       if (data.success) {
         console.log('Paiement initié:', data);
-        // Rediriger vers la page de paiement ou afficher un message de succès
+        // Rediriger vers l'interface de paiement de Lengo Pay
+        if (data.payment_url) {
         window.open(data.payment_url, '_blank');
+        } else {
+          console.error('URL de paiement manquante');
+          alert('Erreur: URL de paiement manquante');
+        }
         await fetchRemboursements();
       } else {
         console.error('Erreur lors du paiement:', data.error);
@@ -210,8 +262,13 @@ export default function RemboursementsPage() {
       
       if (data.success) {
         console.log('Paiement en lot initié:', data);
-        // Rediriger vers la page de paiement ou afficher un message de succès
+        // Rediriger vers l'interface de paiement de Lengo Pay
+        if (data.payment_url) {
         window.open(data.payment_url, '_blank');
+        } else {
+          console.error('URL de paiement manquante');
+          alert('Erreur: URL de paiement manquante');
+        }
         await fetchRemboursements();
       } else {
         console.error('Erreur lors du paiement en lot:', data.error);
@@ -342,12 +399,13 @@ export default function RemboursementsPage() {
               <th className="px-4 py-3 text-left font-semibold border-b">Salaire restant</th>
               <th className="px-4 py-3 text-left font-semibold border-b">Date de l'avance</th>
               <th className="px-4 py-3 text-left font-semibold border-b">Statut</th>
+              <th className="px-4 py-3 text-left font-semibold border-b">Actions</th>
             </tr>
           </thead>
           <tbody>
             {paginatedRemboursements.length === 0 && (
               <tr>
-                <td colSpan={9} className="text-center py-8 text-gray-400">Aucun remboursement trouvé.</td>
+                <td colSpan={10} className="text-center py-8 text-gray-400">Aucun remboursement trouvé.</td>
               </tr>
             )}
             {paginatedRemboursements.map((r, idx) => (
@@ -363,13 +421,15 @@ export default function RemboursementsPage() {
                 <td className="px-4 py-3 font-semibold text-emerald-600 dark:text-emerald-400">{gnfFormatter(calculateSalaireRestant(r))}</td>
                 <td className="px-4 py-3">{r.demande_avance?.date_validation ? new Date(r.demande_avance.date_validation).toLocaleDateString('fr-FR') : '-'}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
                     <span className={`px-2 py-1 rounded text-xs font-semibold
                       ${r.statut === 'PAYE' ? 'bg-green-100 text-green-700' :
                         r.statut === 'EN_ATTENTE' ? 'bg-yellow-100 text-yellow-700' :
                           'bg-gray-100 text-gray-700'}`}>
                       {r.statut}
                     </span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
                     {r.statut === 'EN_ATTENTE' && (
                       <Button
                         size="sm"
@@ -382,6 +442,31 @@ export default function RemboursementsPage() {
                       >
                         💳 Payer
                       </Button>
+                    )}
+                    {r.pay_id && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setCurrentPayId(r.pay_id);
+                            setShowPaymentResultModal(true);
+                          }}
+                          className="text-blue-600 hover:text-blue-700 text-xs"
+                        >
+                          🔍 Vérifier
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            router.push(`/dashboard/remboursements/detail/${r.pay_id}`);
+                          }}
+                          className="text-green-600 hover:text-green-700 text-xs"
+                        >
+                          📋 Détails
+                        </Button>
+                      </>
                     )}
                   </div>
                 </td>
@@ -567,6 +652,17 @@ export default function RemboursementsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Modal de résultat de paiement */}
+      <PaymentResultModal
+        isOpen={showPaymentResultModal}
+        onClose={() => {
+          setShowPaymentResultModal(false);
+          setCurrentPayId(undefined);
+        }}
+        payId={currentPayId}
+        onRefresh={fetchRemboursements}
+      />
 
 
     </div>

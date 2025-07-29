@@ -110,10 +110,10 @@ async function updateRemboursementStatus(payId: string, newStatus: string, lengo
 // GET - Vérification du statut
 export async function GET(
   request: NextRequest,
-  { params }: { params: { pay_id: string } }
+  { params }: { params: Promise<{ pay_id: string }> }
 ) {
   try {
-    const { pay_id } = params;
+    const { pay_id } = await params;
 
     if (!pay_id) {
       return NextResponse.json({ error: 'Pay ID requis' }, { status: 400 });
@@ -211,10 +211,10 @@ export async function GET(
 // POST - Synchronisation forcée
 export async function POST(
   request: NextRequest,
-  { params }: { params: { pay_id: string } }
+  { params }: { params: Promise<{ pay_id: string }> }
 ) {
   try {
-    const { pay_id } = params;
+    const { pay_id } = await params;
     const body = await request.json();
     const { force_sync } = body;
 
